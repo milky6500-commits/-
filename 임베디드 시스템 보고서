@@ -6,6 +6,184 @@
 다음 프로젝트에서 초음파 거리 센서를 이용해 사람의 접근을 감지하여 자동으로 뚜껑이 열리고 일정 시간이 지나면 자동으로 닫히는 스마트 쓰레기통(Embedded Smart Trash Bin) 제작을 목표로 하였다. 
 또한 Processing 프로그램을 이용해 실시간 웹 서버를 구축하여 스마트폰 앱(App Inventor)으로 원격 제어 및 거리값 모니터링이 가능하도록 설계하였다.
 
+
+#include <Servo.h>
+
+Servo lid;
+
+#define TRIG 9
+#define ECHO 8
+#define SERVO_PIN 3
+#define BUZZER 6   // 수동형 피에조 부저
+
+int openAngle = 90;
+int closeAngle = 0;
+
+unsigned long lastOpenTime = 0;
+bool isOpen = false;
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
+
+  lid.attach(SERVO_PIN);
+  lid.write(closeAngle);
+}
+
+long getDistance() {
+  digitalWrite(TRIG, LOW);  
+  delayMicroseconds(2);  
+  digitalWrite(TRIG, HIGH);  
+  delayMicroseconds(10);  
+  digitalWrite(TRIG, LOW);  
+
+  long duration = pulseIn(ECHO, HIGH, 30000);
+  long distance = duration * 0.034 / 2;
+  return distance;
+}
+
+// lid 열릴 때: 띠—
+void openLid() {
+  lid.write(openAngle);
+  isOpen = true;
+  lastOpenTime = millis();
+
+  tone(BUZZER, 1200, 150);  // 1.2kHz, 150ms
+  delay(180);
+  noTone(BUZZER);
+}
+
+// lid 닫힐 때: 삑 삑
+void closeLid() {
+  lid.write(closeAngle);
+  isOpen = false;
+
+  tone(BUZZER, 1500, 120);
+  delay(150);
+  noTone(BUZZER);
+  
+  delay(100);
+
+  tone(BUZZER, 1500, 120);
+  delay(150);
+  noTone(BUZZER);
+}
+
+void loop() {
+
+  // 초음파 거리 측정
+  long d = getDistance();
+
+  // ⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇
+  // ⭐ Processing이 읽을 수 있도록 거리값 출력
+  Serial.print("D:");
+  Serial.println(d);
+  // ⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆
+  
+  // 자동 개폐
+  if (d > 0 && d < 20 && !isOpen) {
+    openLid();
+  }
+
+  if (isOpen && millis() - lastOpenTime > 3000) {
+    closeLid();
+  }
+
+  // Processing 명령 수신
+  if (Serial.available()) {
+    char cmd = Serial.read();
+    
+    if (cmd == 'O') openLid();
+    else if (cmd == 'C') closeLid();
+  }
+
+  delay(100); // 너무 빠르게 연속 전송되면 서버가 못받으니 약간 딜레이
+}
+
+아두이노 코드
+
+
+import processing.serial.*;
+import processing.net.*;
+
+// 시리얼 & 서버
+Serial myPort;
+Server server;
+
+String lastDistance = "0";  // 최신 거리값 저장용
+
+void setup() {
+  size(400, 150);
+  textSize(24);
+
+  // ------ 🔵 아두이노 시리얼 포트 설정 ------
+  println(Serial.list());
+  myPort = new Serial(this, "COM6", 9600);   // 네 포트 그대로
+
+  // 시리얼 버퍼 비우기
+  myPort.clear();
+
+  // ------ 🔵 8080 웹 서버 시작 ------
+  server = new Server(this, 8080);
+
+  println("서버 시작됨 (포트 8080)");
+}
+
+void draw() {
+  background(230);
+  fill(0);
+  text("스마트 쓰레기통 서버 작동 중", 20, 80);
+
+  // ------ 🔵 시리얼로부터 거리값 읽기 ------
+  while (myPort.available() > 0) {
+    String s = myPort.readStringUntil('\n');
+    if (s != null && s.startsWith("D:")) {
+      s = s.trim();
+      s = s.substring(2);   // "D:" 제거
+      lastDistance = s;
+      println("거리 수신: " + lastDistance);
+    }
+  }
+
+  // ------ 🔵 웹 요청 ------
+  Client client = server.available();
+  if (client != null) {
+    String req = client.readString();
+    if (req != null) {
+      println("요청: " + req);
+
+      if (req.contains("GET /open")) {
+        myPort.write('O');  // 아두이노로 열기 명령
+        sendRes(client, "OPEN_OK");
+      }
+      else if (req.contains("GET /close")) {
+        myPort.write('C');  // 아두이노로 닫기 명령
+        sendRes(client, "CLOSE_OK");
+      }
+      else if (req.contains("GET /distance")) {
+        sendRes(client, lastDistance);  // ⭐ 거리값 반환
+      }
+      else {
+        sendRes(client, "INVALID");
+      }
+
+      client.stop();
+    }
+  }
+}
+
+// ------ 🔵 HTTP 응답 송신 ------
+void sendRes(Client c, String body) {
+  c.write("HTTP/1.1 200 OK\r\n");
+  c.write("Content-Type: text/plain; charset=utf-8\r\n");
+  c.write("Access-Control-Allow-Origin: *\r\n");
+  c.write("Connection: close\r\n\r\n");
+  c.write(body);
+}
+프로세싱 코드
+
 5. 아두이노 동작 원리
 (1) 거리 측정
 
